@@ -23,10 +23,6 @@ from laserbox.client import (
     NotFoundError,
 )
 
-# ============================================================
-# Configuration
-# ============================================================
-
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "laserbox-mcp.log"
@@ -41,22 +37,21 @@ logger = logging.getLogger(__name__)
 LB_URL = os.environ.get("LB_URL", "http://100.120.238.37:4000")
 LB_USER = os.environ.get("LB_USER", "mcp@laserbox.local")
 
-# ============================================================
-# MCP Server
-# ============================================================
-
 mcp = FastMCP(
     "LaserBox",
     instructions="""LaserBox CNC management tools with enforced workflows.
 
     BUSINESS RULES (strictly enforced):
-    1. Quotes must be created BEFORE orders
-    2. Quotes must be APPROVED before converting to orders
-    3. Payments require a valid order_id
-    4. Inventory movements must reference existing materials
+    1. Customer creation REQUIRES: name, phone, communicationPreference (whatsapp/phone)
+    2. Quotes must be created BEFORE orders
+    3. Quotes must be APPROVED before converting to orders
+    4. Payments require a valid order_id
 
     WORKFLOW: customer → quote → approve → order → payment
-    Do NOT skip steps. The tools will reject invalid sequences.
+
+    PDF EXPORTS:
+    - Quote PDF: export_quote_pdf(quote_id)
+    - Remision PDF: export_remision_pdf(order_id)
     """
 )
 
@@ -93,8 +88,8 @@ def list_customers() -> list[dict]:
 
 
 @mcp.tool()
-def get_customer(customer_id: int) -> dict:
-    """Get customer details."""
+def get_customer(customer_id: str) -> dict:
+    """Get customer details including communicationPreference."""
     logger.info("Getting customer %s", customer_id)
     client = _get_client()
     try:
@@ -106,21 +101,58 @@ def get_customer(customer_id: int) -> dict:
 
 
 @mcp.tool()
-def create_customer(name: str, email: str = None, phone: str = None,
-                    company: str = None) -> dict:
+def create_customer(name: str, phone: str,
+                    communication_preference: str = "whatsapp",
+                    email: str = None, company: str = None) -> dict:
     """
-    Create a new customer.
+    Create a new customer. REQUIRES name, phone, and communication preference.
 
     Args:
         name: Customer name (required)
+        phone: Phone number (required)
+        communication_preference: How to contact them — "whatsapp" or "phone" (required)
         email: Email address (optional)
-        phone: Phone number (optional)
         company: Company name (optional)
+
+    Returns:
+        Created customer with ID
     """
-    logger.info("Creating customer: %s", name)
+    logger.info("Creating customer: %s (contact: %s)", name, communication_preference)
     client = _get_client()
     try:
-        return client.create_customer(name, email, phone, company)
+        return client.create_customer(name, phone, communication_preference,
+                                      email, company)
+    except Exception as e:
+        return _handle_error(e)
+    finally:
+        client.close()
+
+
+@mcp.tool()
+def update_customer(customer_id: str, name: str = None, phone: str = None,
+                    communication_preference: str = None, email: str = None,
+                    company: str = None) -> dict:
+    """
+    Update a customer. Only provided fields are updated.
+
+    Args:
+        customer_id: Customer ID to update
+        name: New name (optional)
+        phone: New phone (optional)
+        communication_preference: "whatsapp" or "phone" (optional)
+        email: New email (optional)
+        company: New company (optional)
+    """
+    logger.info("Updating customer %s", customer_id)
+    client = _get_client()
+    try:
+        updates = {}
+        if name: updates["name"] = name
+        if phone: updates["phone"] = phone
+        if communication_preference: updates["communicationPreference"] = communication_preference
+        if email: updates["email"] = email
+        if company: updates["company"] = company
+        return client.update_customer(customer_id, **updates)
     except Exception as e:
         return _handle_error(e)
     finally:
@@ -128,7 +160,7 @@ def create_customer(name: str, email: str = None, phone: str = None,
 
 
 # ============================================================
-# Quotes — WORKFLOW: create → approve → convert to order
+# Quotes
 # ============================================================
 
 @mcp.tool()
@@ -150,8 +182,8 @@ def list_quotes(status: str = None) -> list[dict]:
 
 
 @mcp.tool()
-def get_quote(quote_id: int) -> dict:
-    """Get quote details with items and pricing."""
+def get_quote(quote_id: str) -> dict:
+    """Get quote details with items, pricing, and customer info."""
     logger.info("Getting quote %s", quote_id)
     client = _get_client()
     try:
@@ -163,13 +195,12 @@ def get_quote(quote_id: int) -> dict:
 
 
 @mcp.tool()
-def create_quote(customer_id: int, items: list[dict],
+def create_quote(customer_id: str, items: list[dict],
                  materials: list[dict] = None, notes: str = None) -> dict:
     """
-    Create a new quote. REQUIRES customer_id and items.
+    Create a new quote. REQUIRES customer_id and at least one item.
 
-    WORKFLOW: This is step 1. After creating, you MUST approve it
-    before converting to an order.
+    WORKFLOW: This is step 1. After creating, approve it before converting to order.
 
     Args:
         customer_id: Customer ID (get from list_customers)
@@ -179,7 +210,7 @@ def create_quote(customer_id: int, items: list[dict],
             - width: Width in mm (optional)
             - height: Height in mm (optional)
         materials: List of materials needed (optional)
-        notes: Additional notes (optional)
+        notes: Additional notes/observations (optional)
 
     Returns:
         Created quote with ID and status ACTIVE
@@ -197,17 +228,14 @@ def create_quote(customer_id: int, items: list[dict],
 
 
 @mcp.tool()
-def approve_quote(quote_id: int) -> dict:
+def approve_quote(quote_id: str) -> dict:
     """
     Approve a quote. REQUIRED before converting to order.
 
-    WORKFLOW: This is step 2. Quote must be in ACTIVE/APPROVED status.
+    WORKFLOW: This is step 2.
 
     Args:
         quote_id: Quote ID to approve
-
-    Returns:
-        Updated quote with status APPROVED
 
     Next step: convert_quote_to_order(quote_id)
     """
@@ -222,12 +250,8 @@ def approve_quote(quote_id: int) -> dict:
 
 
 @mcp.tool()
-def delete_quote(quote_id: int) -> dict:
-    """
-    Delete a quote. WARNING: Irreversible.
-
-    Only ACTIVE quotes can be deleted. APPROVED/CONVERTED quotes cannot.
-    """
+def delete_quote(quote_id: str) -> dict:
+    """Delete a quote. WARNING: Irreversible. Only ACTIVE quotes can be deleted."""
     logger.info("Deleting quote %s", quote_id)
     client = _get_client()
     try:
@@ -239,24 +263,19 @@ def delete_quote(quote_id: int) -> dict:
 
 
 # ============================================================
-# Orders — WORKFLOW: quote → approve → convert → order
+# Orders
 # ============================================================
 
 @mcp.tool()
-def convert_quote_to_order(quote_id: int) -> dict:
+def convert_quote_to_order(quote_id: str) -> dict:
     """
     Convert an approved quote to a production order.
 
-    WORKFLOW ENFORCEMENT:
-    - Quote MUST exist
-    - Quote MUST be in APPROVED status
-    - If not, tool returns error explaining what to do first
+    WORKFLOW ENFORCEMENT: Quote MUST be in APPROVED status.
+    If not, tool returns error explaining what to do first.
 
     Args:
         quote_id: Quote ID to convert (must be approved first)
-
-    Returns:
-        Created order with ID
 
     ERROR if quote is not approved. Fix: approve_quote(quote_id) first.
     """
@@ -271,7 +290,7 @@ def convert_quote_to_order(quote_id: int) -> dict:
 
 
 @mcp.tool()
-def get_order(order_id: int) -> dict:
+def get_order(order_id: str) -> dict:
     """Get order details."""
     logger.info("Getting order %s", order_id)
     client = _get_client()
@@ -283,17 +302,48 @@ def get_order(order_id: int) -> dict:
         client.close()
 
 
-@mcp.tool()
-def get_remision(order_id: int) -> str:
-    """
-    Get remision (delivery note) PDF for an order.
+# ============================================================
+# PDF Export
+# ============================================================
 
-    Returns base64-encoded PDF content.
+@mcp.tool()
+def export_quote_pdf(quote_id: str) -> str:
     """
-    logger.info("Getting remision for order %s", order_id)
+    Export a quote as PDF.
+
+    Args:
+        quote_id: Quote ID to export
+
+    Returns:
+        Base64-encoded PDF content
+    """
+    logger.info("Exporting quote PDF: %s", quote_id)
     client = _get_client()
     try:
-        content = client.get_remision(order_id)
+        content = client.get_quote_pdf(quote_id)
+        import base64
+        return base64.b64encode(content).decode()
+    except Exception as e:
+        return str(_handle_error(e))
+    finally:
+        client.close()
+
+
+@mcp.tool()
+def export_remision_pdf(order_id: str) -> str:
+    """
+    Export a remision (delivery note) PDF for an order.
+
+    Args:
+        order_id: Order ID
+
+    Returns:
+        Base64-encoded PDF content
+    """
+    logger.info("Exporting remision PDF: %s", order_id)
+    client = _get_client()
+    try:
+        content = client.get_remision_pdf(order_id)
         import base64
         return base64.b64encode(content).decode()
     except Exception as e:
@@ -307,7 +357,7 @@ def get_remision(order_id: int) -> str:
 # ============================================================
 
 @mcp.tool()
-def list_payments(order_id: int) -> list[dict]:
+def list_payments(order_id: str) -> list[dict]:
     """List payments for an order."""
     logger.info("Listing payments for order %s", order_id)
     client = _get_client()
@@ -320,12 +370,10 @@ def list_payments(order_id: int) -> list[dict]:
 
 
 @mcp.tool()
-def register_payment(order_id: int, amount: float,
+def register_payment(order_id: str, amount: float,
                      method: str = "cash", notes: str = None) -> dict:
     """
     Register a payment for an order.
-
-    WORKFLOW: Order must exist before registering payment.
 
     Args:
         order_id: Order ID to pay
@@ -344,16 +392,16 @@ def register_payment(order_id: int, amount: float,
 
 
 # ============================================================
-# Inventory
+# Materials
 # ============================================================
 
 @mcp.tool()
-def list_inventory() -> list[dict]:
+def list_materials() -> list[dict]:
     """List all inventory materials."""
-    logger.info("Listing inventory")
+    logger.info("Listing materials")
     client = _get_client()
     try:
-        return client.list_inventory()
+        return client.list_materials()
     except Exception as e:
         return _handle_error(e)
     finally:
@@ -361,54 +409,23 @@ def list_inventory() -> list[dict]:
 
 
 @mcp.tool()
-def create_material(name: str, unit: str = "m2", stock: float = 0) -> dict:
+def create_material(name: str, thickness_mm: str = None,
+                    sheet_width_mm: int = None,
+                    sheet_height_mm: int = None) -> dict:
     """
     Create a new inventory material.
 
     Args:
         name: Material name
-        unit: Unit of measure (m2, kg, units, etc.)
-        stock: Initial stock quantity
+        thickness_mm: Thickness in mm (e.g., "3", "6", "9")
+        sheet_width_mm: Sheet width in mm
+        sheet_height_mm: Sheet height in mm
     """
     logger.info("Creating material: %s", name)
     client = _get_client()
     try:
-        return client.create_material(name, unit, stock)
-    except Exception as e:
-        return _handle_error(e)
-    finally:
-        client.close()
-
-
-@mcp.tool()
-def add_lot(material_id: int, quantity: float,
-            supplier_id: int = None, cost: float = None) -> dict:
-    """
-    Add a lot to an existing material.
-
-    Args:
-        material_id: Material ID
-        quantity: Quantity to add
-        supplier_id: Supplier ID (optional)
-        cost: Cost per unit (optional)
-    """
-    logger.info("Adding lot: %s units to material %s", quantity, material_id)
-    client = _get_client()
-    try:
-        return client.add_lot(material_id, quantity, supplier_id, cost)
-    except Exception as e:
-        return _handle_error(e)
-    finally:
-        client.close()
-
-
-@mcp.tool()
-def list_suppliers() -> list[dict]:
-    """List all suppliers."""
-    logger.info("Listing suppliers")
-    client = _get_client()
-    try:
-        return client.list_suppliers()
+        return client.create_material(name, thickness_mm,
+                                      sheet_width_mm, sheet_height_mm)
     except Exception as e:
         return _handle_error(e)
     finally:
@@ -432,27 +449,13 @@ def list_catalog_products() -> list[dict]:
         client.close()
 
 
-@mcp.tool()
-def create_catalog_product(name: str, description: str = None,
-                           price: float = None) -> dict:
-    """Create a catalog product."""
-    logger.info("Creating catalog product: %s", name)
-    client = _get_client()
-    try:
-        return client.create_catalog_product(name, description, price)
-    except Exception as e:
-        return _handle_error(e)
-    finally:
-        client.close()
-
-
 # ============================================================
 # Costs
 # ============================================================
 
 @mcp.tool()
-def get_rates() -> dict:
-    """Get current cutting rates."""
+def get_rates() -> list[dict]:
+    """Get current cutting/engraving rates."""
     logger.info("Getting rates")
     client = _get_client()
     try:
@@ -465,7 +468,7 @@ def get_rates() -> dict:
 
 @mcp.tool()
 def list_cutters() -> list[dict]:
-    """List available cutters."""
+    """List available cutters/tools."""
     logger.info("Listing cutters")
     client = _get_client()
     try:
@@ -509,10 +512,6 @@ def health_check() -> dict:
     finally:
         client.close()
 
-
-# ============================================================
-# Entry Point
-# ============================================================
 
 if __name__ == "__main__":
     logger.info("Starting LaserBox MCP Server...")

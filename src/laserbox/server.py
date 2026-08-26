@@ -42,12 +42,15 @@ mcp = FastMCP(
     instructions="""LaserBox CNC management tools with enforced workflows.
 
     BUSINESS RULES (strictly enforced):
-    1. Customer creation REQUIRES: name, phone, communicationPreference (whatsapp/phone)
+    1. Customer creation REQUIRES: name. Phone is optional (omit if not available).
     2. Quotes must be created BEFORE orders
     3. Quotes must be APPROVED before converting to orders
     4. Payments require a valid order_id
 
     WORKFLOW: customer → quote → approve → order → payment
+
+    QUOTE ITEMS: Each item supports unitPriceCents (price in cents). If omitted, defaults to 0.
+    Use update_quote(quote_id, items=[...]) to set or update prices after creation.
 
     PDF EXPORTS:
     - Quote PDF: export_quote_pdf(quote_id)
@@ -57,7 +60,7 @@ mcp = FastMCP(
 
 
 def _get_client() -> LaserBoxClient:
-    return LaserBoxClient(url=LB_URL, user=LB_USER)
+    return LaserBoxClient(base_url=LB_URL, user=LB_USER)
 
 
 def _handle_error(e: Exception) -> dict:
@@ -101,16 +104,16 @@ def get_customer(customer_id: str) -> dict:
 
 
 @mcp.tool()
-def create_customer(name: str, phone: str,
+def create_customer(name: str, phone: str = None,
                     communication_preference: str = "whatsapp",
                     email: str = None, company: str = None) -> dict:
     """
-    Create a new customer. REQUIRES name, phone, and communication preference.
+    Create a new customer. REQUIRES name only. Phone is optional.
 
     Args:
         name: Customer name (required)
-        phone: Phone number (required)
-        communication_preference: How to contact them — "whatsapp" or "phone" (required)
+        phone: Phone number (optional — omit if not available)
+        communication_preference: How to contact them — "whatsapp" or "phone" (default: whatsapp)
         email: Email address (optional)
         company: Company name (optional)
 
@@ -205,10 +208,11 @@ def create_quote(customer_id: str, items: list[dict],
     Args:
         customer_id: Customer ID (get from list_customers)
         items: List of items, each with:
-            - description: Item description
-            - quantity: Number of units
-            - width: Width in mm (optional)
-            - height: Height in mm (optional)
+            - description: Item description (required)
+            - quantity: Number of units (required)
+            - unitPriceCents: Price per unit in cents (optional, default 0)
+            - widthMm: Width in mm (optional)
+            - heightMm: Height in mm (optional)
         materials: List of materials needed (optional)
         notes: Additional notes/observations (optional)
 
@@ -511,6 +515,85 @@ def health_check() -> dict:
         return _handle_error(e)
     finally:
         client.close()
+
+
+# ============================================================
+# Quote Updates
+# ============================================================
+
+@mcp.tool()
+def update_quote(quote_id: str, items: list[dict] = None,
+                 materials: list[dict] = None, notes: str = None) -> dict:
+    """
+    Update an existing quote. Only provided fields are updated.
+
+    Use this to set/update item prices (unitPriceCents) after creation.
+
+    Args:
+        quote_id: Quote ID to update
+        items: New items list (replaces all items). Each item:
+            - description: Item description
+            - quantity: Number of units
+            - unitPriceCents: Price per unit in cents
+            - widthMm: Width in mm (optional)
+            - heightMm: Height in mm (optional)
+        materials: New materials list (optional)
+        notes: New observations (optional)
+
+    Returns:
+        Updated quote
+    """
+    logger.info("Updating quote %s", quote_id)
+    client = _get_client()
+    try:
+        updates = {}
+        if items is not None: updates["items"] = items
+        if materials is not None: updates["materials"] = materials
+        if notes is not None: updates["observations"] = notes
+        return client.update_quote(quote_id, **updates)
+    except Exception as e:
+        return _handle_error(e)
+    finally:
+        client.close()
+
+
+# ============================================================
+# Prompts
+# ============================================================
+
+@mcp.prompt()
+def guide_create_quote() -> str:
+    """Step-by-step guide for creating a quote with correct workflow."""
+    return """To create a quote, follow these steps:
+
+1. LIST customers with list_customers() to find or confirm the customer
+2. If customer doesn't exist, CREATE one with create_customer(name, phone?)
+3. CREATE quote with create_quote(customer_id, items=[{
+     "description": "Product description",
+     "quantity": 1,
+     "unitPriceCents": 15000,  ← price in cents (MXN)
+     "widthMm": 300,            ← optional
+     "heightMm": 200            ← optional
+   }])
+4. To update prices later: update_quote(quote_id, items=[{...}])
+5. APPROVE with approve_quote(quote_id)
+6. CONVERT to order with convert_quote_to_order(quote_id)
+
+RULES:
+- unitPriceCents is in CENTS (15000 = $150.00 MXN)
+- Quote total is calculated automatically from items
+- Only ACTIVE quotes can be edited or deleted
+- Only APPROVED quotes can be converted to orders
+- Phone is optional for customers (omit if not available)"""
+
+
+@mcp.prompt()
+def guide_list_prompts() -> str:
+    """List all available prompts and their descriptions."""
+    return """Available prompts:
+- guide_create_quote: Step-by-step guide for creating a quote with correct workflow
+
+Use get_prompt("guide_create_quote") for detailed instructions."""
 
 
 if __name__ == "__main__":

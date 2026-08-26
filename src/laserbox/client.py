@@ -85,24 +85,25 @@ class LaserBoxClient:
     def get_customer(self, customer_id: str) -> dict:
         return self._request("GET", f"/api/customers/{customer_id}").json()
 
-    def create_customer(self, name: str, phone: str,
+    def create_customer(self, name: str, phone: str = None,
                         communication_preference: str = "whatsapp",
                         email: str = None, company: str = None) -> dict:
         """
         Create a new customer.
 
         communication_preference must be: "whatsapp" or "phone"
+        Phone is optional — omit if not available.
         """
         if communication_preference not in ("whatsapp", "phone"):
             raise ValidationError(
                 f"communicationPreference must be 'whatsapp' or 'phone', "
                 f"got '{communication_preference}'"
             )
-        data = {
+        data: dict = {
             "name": name,
-            "phone": phone,
             "communicationPreference": communication_preference,
         }
+        if phone: data["phone"] = phone
         if email: data["email"] = email
         if company: data["company"] = company
         return self._request("POST", "/api/customers", json_data=data).json()

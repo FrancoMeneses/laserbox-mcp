@@ -522,7 +522,7 @@ def health_check() -> dict:
 # ============================================================
 
 @mcp.tool()
-def update_quote(quote_id: str, items: list[dict] = None,
+def update_quote(quote_id: str, customer_id: str = None, items: list[dict] = None,
                  materials: list[dict] = None, notes: str = None) -> dict:
     """
     Update an existing quote. Only provided fields are updated.
@@ -531,6 +531,7 @@ def update_quote(quote_id: str, items: list[dict] = None,
 
     Args:
         quote_id: Quote ID to update
+        customer_id: Customer ID (required by API — get from list_customers or get_quote)
         items: New items list (replaces all items). Each item:
             - description: Item description
             - quantity: Number of units
@@ -546,7 +547,12 @@ def update_quote(quote_id: str, items: list[dict] = None,
     logger.info("Updating quote %s", quote_id)
     client = _get_client()
     try:
+        # Fetch current quote to get customerId if not provided
+        if customer_id is None:
+            current = client.get_quote(quote_id)
+            customer_id = current.get("customerId")
         updates = {}
+        if customer_id is not None: updates["customerId"] = customer_id
         if items is not None: updates["items"] = items
         if materials is not None: updates["materials"] = materials
         if notes is not None: updates["observations"] = notes

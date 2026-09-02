@@ -123,7 +123,11 @@ class LaserBoxClient:
         return self._extract_items(resp)
 
     def get_quote(self, quote_id: str) -> dict:
-        return self._request("GET", f"/api/quotes/{quote_id}").json()
+        data = self._request("GET", f"/api/quotes/{quote_id}").json()
+        # API wraps single quote in {quote: {...}}
+        if isinstance(data, dict) and "quote" in data:
+            return data["quote"]
+        return data
 
     def create_quote(self, customer_id: str, items: list[dict],
                      materials: list[dict] = None, notes: str = None) -> dict:
@@ -135,8 +139,12 @@ class LaserBoxClient:
         return self._request("POST", "/api/quotes", json_data=data).json()
 
     def update_quote(self, quote_id: str, **kwargs) -> dict:
-        return self._request("PATCH", f"/api/quotes/{quote_id}",
+        data = self._request("PATCH", f"/api/quotes/{quote_id}",
                            json_data=kwargs).json()
+        # API wraps single quote in {quote: {...}}
+        if isinstance(data, dict) and "quote" in data:
+            return data["quote"]
+        return data
 
     def approve_quote(self, quote_id: str) -> dict:
         return self._request("PATCH", f"/api/quotes/{quote_id}/status",

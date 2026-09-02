@@ -315,6 +315,60 @@ def convert_quote_to_order(quote_id: str, advance_amount: float,
 
 
 @mcp.tool()
+def create_direct_order(customer_name: str, items: list[dict],
+                         advance_amount: float, customer_phone: str = '',
+                         responsible_user_id: str = 'cms9q0c6q001rozjpwmpi0cdb',
+                         due_date: str = '', advance_method: str = 'cash',
+                         observations: str = '') -> dict:
+    """
+    Create an order directly WITHOUT a quote. Use for walk-in sales or quick orders.
+
+    This creates the customer (if new), order, items, and registers the advance payment
+    all in one step. No cotización needed.
+
+    Args:
+        customer_name: Customer name (required)
+        items: List of products, each with:
+            - description: Product description
+            - quantity: Number of units
+            - unitPriceCents: Price per unit in cents
+        advance_amount: Advance payment amount in MXN (REQUIRED — ask customer)
+        customer_phone: Customer phone (optional)
+        responsible_user_id: Person responsible
+            - Pablo Herrera: cms9q0c6q001rozjpwmpi0cdb (default)
+            - Franco Meneses: cms9qwpi30000ozg6jnfjip11
+        due_date: Due date (YYYY-MM-DD). Defaults to 7 days from now.
+        advance_method: Payment method (cash, transfer, card)
+        observations: Order notes (optional)
+
+    Returns:
+        Created order with items and payment
+    """
+    logger.info("Creating direct order for %s", customer_name)
+    client = _get_client()
+    try:
+        if not due_date:
+            from datetime import datetime, timedelta, timezone
+            due_date = (datetime.now(timezone.utc) + timedelta(days=7)).strftime('%Y-%m-%d')
+        body = {
+            "customerName": customer_name,
+            "customerCommunicationPreference": "whatsapp",
+            "responsibleUserId": responsible_user_id,
+            "dueDate": due_date,
+            "items": items,
+            "paymentAmountCents": int(advance_amount * 100),
+            "paymentMethod": advance_method
+        }
+        if customer_phone: body["customerPhone"] = customer_phone
+        if observations: body["observations"] = observations
+        return client._request("POST", "/api/direct-orders", json_data=body).json()
+    except Exception as e:
+        return _handle_error(e)
+    finally:
+        client.close()
+
+
+@mcp.tool()
 def get_order(order_id: str) -> dict:
     """Get order details."""
     logger.info("Getting order %s", order_id)

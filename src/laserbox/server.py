@@ -527,11 +527,12 @@ def update_quote(quote_id: str, customer_id: str = None, items: list[dict] = Non
     """
     Update an existing quote. Only provided fields are updated.
 
-    Use this to set/update item prices (unitPriceCents) after creation.
+    Use this to set/update item prices (unitPriceCents) after creation,
+    or to update notes/observations without touching items.
 
     Args:
         quote_id: Quote ID to update
-        customer_id: Customer ID (required by API — get from list_customers or get_quote)
+        customer_id: Customer ID (optional — auto-fetched if not provided)
         items: New items list (replaces all items). Each item:
             - description: Item description
             - quantity: Number of units
@@ -547,13 +548,27 @@ def update_quote(quote_id: str, customer_id: str = None, items: list[dict] = Non
     logger.info("Updating quote %s", quote_id)
     client = _get_client()
     try:
-        # Fetch current quote to get customerId if not provided
+        # Always fetch current quote — API requires items in every PATCH
+        current = client.get_quote(quote_id)
         if customer_id is None:
-            current = client.get_quote(quote_id)
             customer_id = current.get("customerId")
         updates = {}
         if customer_id is not None: updates["customerId"] = customer_id
-        if items is not None: updates["items"] = items
+        # If items not provided, keep current items so API doesn't reject
+        if items is not None:
+            updates["items"] = items
+        else:
+            current_items = current.get("items", [])
+            updates["items"] = [
+                {
+                    "description": it.get("description", ""),
+                    "quantity": int(it.get("quantity", 1)),
+                    "unitPriceCents": it.get("unitPriceCents", 0),
+                    **({"widthMm": it["widthMm"]} if it.get("widthMm") else {}),
+                    **({"heightMm": it["heightMm"]} if it.get("heightMm") else {}),
+                }
+                for it in current_items
+            ]
         if materials is not None: updates["materials"] = materials
         if notes is not None: updates["observations"] = notes
         return client.update_quote(quote_id, **updates)

@@ -163,15 +163,34 @@ class LaserBoxClient:
     # Orders
     # ============================================================
 
-    def convert_quote_to_order(self, quote_id: str) -> dict:
+    def convert_quote_to_order(self, quote_id: str, responsible_user_id: str,
+                                due_date: str, payment_amount_cents: int,
+                                payment_method: str = 'cash',
+                                payment_note: str | None = None) -> dict:
         quote = self.get_quote(quote_id)
         status = quote.get("status", "").upper()
         if status not in ("APPROVED", "ACTIVE"):
             raise ValidationError(
                 f"Cannot convert quote {quote_id}: status is '{status}'. "
-                f"Must be APPROVED first. Use approve_quote({quote_id})."
+                f"Must be ACTIVE or APPROVED."
             )
-        return self._request("POST", f"/api/orders/{quote_id}/convert").json()
+        from datetime import datetime, timezone
+        body = {
+            "responsibleUserId": responsible_user_id,
+            "dueDate": due_date,
+            "materialReservationMode": "PENDING",
+            "payment": {
+                "amountCents": payment_amount_cents,
+                "method": payment_method,
+                "receivedAt": datetime.now(timezone.utc).isoformat()
+            },
+            "reservations": [],
+            "fulfillmentPlan": []
+        }
+        if payment_note:
+            body["payment"]["note"] = payment_note
+        return self._request("POST", f"/api/quotes/{quote_id}/convert",
+                             json_data=body).json()
 
     def get_order(self, order_id: str) -> dict:
         return self._request("GET", f"/api/orders/{order_id}").json()

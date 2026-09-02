@@ -271,22 +271,43 @@ def delete_quote(quote_id: str) -> dict:
 # ============================================================
 
 @mcp.tool()
-def convert_quote_to_order(quote_id: str) -> dict:
+def convert_quote_to_order(quote_id: str, advance_amount: float,
+                            responsible_user_id: str = 'cms9q0c6q001rozjpwmpi0cdb',
+                            due_date: str = '', advance_method: str = 'cash',
+                            advance_note: str = '') -> dict:
     """
-    Convert an approved quote to a production order.
+    Convert a quote to a production order and register the initial advance payment.
 
-    WORKFLOW ENFORCEMENT: Quote MUST be in APPROVED status.
-    If not, tool returns error explaining what to do first.
+    WORKFLOW: This is step 2 after creating a quote.
+    The advance payment is REQUIRED — ask the customer before converting.
 
     Args:
-        quote_id: Quote ID to convert (must be approved first)
+        quote_id: Quote ID to convert (must be ACTIVE)
+        advance_amount: Advance payment amount in MXN (REQUIRED — ask customer)
+        responsible_user_id: User responsible for the order
+            - Pablo Herrera: cms9q0c6q001rozjpwmpi0cdb
+            - Franco Meneses: cms9qwpi30000ozg6jnfjip11
+            - Aserrín: cms9r7io60000ozgzrup7x0fl
+        due_date: Due date in ISO format (YYYY-MM-DD). Defaults to 7 days from now.
+        advance_method: Payment method (cash, transfer, card)
+        advance_note: Optional note about the payment
 
-    ERROR if quote is not approved. Fix: approve_quote(quote_id) first.
+    Returns:
+        Created order with payment registered
     """
     logger.info("Converting quote %s to order", quote_id)
     client = _get_client()
     try:
-        return client.convert_quote_to_order(quote_id)
+        if not due_date:
+            from datetime import datetime, timedelta, timezone
+            due_date = (datetime.now(timezone.utc) + timedelta(days=7)).strftime('%Y-%m-%dT23:59:59.000Z')
+        elif 'T' not in due_date:
+            due_date = f'{due_date}T23:59:59.000Z'
+        advance_cents = int(advance_amount * 100)
+        return client.convert_quote_to_order(
+            quote_id, responsible_user_id, due_date, advance_cents,
+            advance_method, advance_note or None
+        )
     except Exception as e:
         return _handle_error(e)
     finally:
